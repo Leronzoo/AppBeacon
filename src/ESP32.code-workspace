@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../../../../../../../../PFlutter/ESP32"
+		},
+		{
+			"name": "appesp",
+			"path": ".."
+		}
+	],
+	"settings": {}
+}
