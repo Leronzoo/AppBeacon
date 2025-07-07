@@ -8,7 +8,6 @@
 #include <freertos/task.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <ArduinoJson.h>
 
 // Wi-Fi
 const char* ssid = "Lorenzo 2G";
@@ -20,8 +19,8 @@ const char* webip = "192.168.100.32";
 #define CHARACTERISTIC_UUID "87654321-4321-4321-4321-cba987654321"
 #define RSSI_CHARACTERISTIC_UUID "11111111-2222-3333-4444-555555555555"
 
-// Variáveis dinâmicas do beacon
-String beaconId = "BEACON 2";
+// Variáveis dinâmicas
+String beaconId = "";  // Será preenchido após BLEDevice::init()
 String deviceName = "BEACON COZINHA";
 
 // Ponteiros BLE
@@ -39,9 +38,9 @@ bool advertisingAtivo = true;
 TaskHandle_t advertisingTaskHandle = NULL;
 TaskHandle_t gattServerTaskHandle = NULL;
 TaskHandle_t heartbeatTaskHandle = NULL;
-TaskHandle_t httpTaskHandle = NULL;
+TaskHandle_t httpHeartbeatTaskHandle = NULL;
 
-// URL encode
+// Função simples para urlencode
 String urlencode(String str) {
   String encoded = "";
   for (int i = 0; i < str.length(); i++) {
@@ -83,85 +82,7 @@ class MyCallbacks: public BLECharacteristicCallbacks {
   }
 };
 
-// Tarefa de configuração dinâmica
-void httpConfigTask(void *parameter) {
-  Serial.println("Tarefa de configuração HTTP iniciada");
-
-  while (true) {
-    if (WiFi.status() == WL_CONNECTED) {
-      String url = "http://" + String(webip) + "/api/config.php?id=" + urlencode(beaconId);
-      HTTPClient http;
-      http.begin(url);
-
-      int httpCode = http.GET();
-      if (httpCode == 200) {
-        String payload = http.getString();
-        Serial.println("Configuração recebida: " + payload);
-
-        ArduinoJson::JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, payload);
-        if (!error) {
-          beaconId = doc["beacon_id"].as<String>();
-          String status = doc["status"].as<String>();
-          String mensagem = doc["mensagem"].as<String>();
-          deviceName = doc["device_name"].as<String>();
-
-          String json = "{\"id\":\"" + beaconId + "\",\"status\":\"" + status + "\",\"mensagem\":\"" + mensagem + "\"}";
-          pCharacteristic->setValue(json.c_str());
-
-        BLEAdvertisementData advData;
-        advData.setName(deviceName.c_str());
-        advData.setCompleteServices(BLEUUID(SERVICE_UUID));
-        pAdvertising->stop();  // Para o advertising atual
-        delay(100);            // Pequeno delay de segurança
-        pAdvertising->setAdvertisementData(advData);
-        pAdvertising->start(); // Reinicia o advertising com novo nome
-
-        Serial.println("Advertising reiniciado com novo nome: " + deviceName);
-
-        } else {
-          Serial.println("Erro ao decodificar JSON");
-        }
-      } else {
-        Serial.printf("Erro HTTP: %d\n", httpCode);
-      }
-      http.end();
-    } else {
-      Serial.println("Wi-Fi desconectado. Tentando reconectar...");
-      WiFi.reconnect();
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(15000));
-  }
-}
-
-// Registro no servidor
-void registerTask(void *parameter) {
-  Serial.println("Tarefa de registro HTTP iniciada");
-
-  while (WiFi.status() != WL_CONNECTED) {
-    vTaskDelay(pdMS_TO_TICKS(1000));
-  }
-
-  HTTPClient http;
-  http.begin("http://" + String(webip) + "/api/register.php");
-  http.addHeader("Content-Type", "application/json");
-
-String json = "{\"beacon_id\":\"" + beaconId + "\","
-              "\"status\":\"ativo\","
-              "\"mensagem\":\"Inicializado\","
-              "\"versao\":\"1.0\","
-              "\"device_name\":\"" + deviceName + "\"}";
-  int httpCode = http.POST(json);
-
-  if (httpCode > 0) Serial.println("Beacon registrado no servidor.");
-  else Serial.printf("Falha ao registrar beacon: %d\n", httpCode);
-
-  http.end();
-  vTaskDelete(NULL);
-}
-
-// Advertising
+// Advertising BLE (GATT updates)
 void advertisingTask(void *parameter) {
   while (1) {
     if (!deviceConnected && !advertisingAtivo) {
@@ -177,7 +98,7 @@ void advertisingTask(void *parameter) {
   }
 }
 
-// GATT monitor
+// GATT reconexão
 void gattServerTask(void *parameter) {
   while (1) {
     if (!deviceConnected && oldDeviceConnected) {
@@ -195,10 +116,10 @@ void gattServerTask(void *parameter) {
   }
 }
 
-// Heartbeat
+// Heartbeat no terminal + notifica RSSI simulado
 void heartbeatTask(void *parameter) {
   while (1) {
-    Serial.printf("Heartbeat - Heap livre: %lu bytes - Conectado: %s\n",
+    Serial.printf("Heartbeat local - Heap livre: %lu bytes - Conectado: %s\n",
                   ESP.getFreeHeap(), deviceConnected ? "Sim" : "Não");
 
     int16_t rssi = -40 + random(-20, 20);
@@ -209,7 +130,32 @@ void heartbeatTask(void *parameter) {
   }
 }
 
-// Setup
+// Heartbeat HTTP
+void heartbeatHttpTask(void *parameter) {
+  while (1) {
+    if (WiFi.status() == WL_CONNECTED) {
+      String url = "http://" + String(webip) + "/api/heartbeat.php?beacon_id=" + urlencode(beaconId);
+      HTTPClient http;
+      http.begin(url);
+      int httpCode = http.GET();
+
+      if (httpCode == 200) {
+        String payload = http.getString();
+        Serial.println("Resposta do servidor (resposta): " + payload);
+      } else {
+        Serial.printf("Erro HTTP no heartbeat: %d\n", httpCode);
+      }
+
+      http.end();
+    } else {
+      Serial.println("Wi-Fi desconectado, tentando reconectar...");
+      WiFi.reconnect();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(15000));
+  }
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println("Iniciando ESP32 BLE Beacon...");
@@ -221,7 +167,9 @@ void setup() {
   }
   Serial.println("\nWi-Fi conectado!");
 
-  BLEDevice::init(deviceName.c_str());
+  BLEDevice::init(deviceName.c_str());                  // Inicializa BLE
+  beaconId = BLEDevice::getAddress().toString().c_str(); // Agora o MAC é capturado corretamente
+
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
@@ -262,11 +210,11 @@ void setup() {
   BLEDevice::startAdvertising();
   advertisingAtivo = true;
 
-  xTaskCreatePinnedToCore(registerTask, "RegisterTask", 4096, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(httpConfigTask, "HTTPConfigTask", 4096, NULL, 1, &httpTaskHandle, 1);
+  // Inicia tarefas
   xTaskCreatePinnedToCore(advertisingTask, "AdvertisingTask", 4096, NULL, 2, &advertisingTaskHandle, 0);
   xTaskCreatePinnedToCore(gattServerTask, "GATTServerTask", 4096, NULL, 2, &gattServerTaskHandle, 1);
   xTaskCreatePinnedToCore(heartbeatTask, "HeartbeatTask", 2048, NULL, 1, &heartbeatTaskHandle, 0);
+  xTaskCreatePinnedToCore(heartbeatHttpTask, "HTTPHeartbeatTask", 4096, NULL, 1, &httpHeartbeatTaskHandle, 1);
 }
 
 void loop() {
