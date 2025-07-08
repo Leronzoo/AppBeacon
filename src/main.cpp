@@ -10,9 +10,9 @@
 #include <HTTPClient.h>
 
 // Wi-Fi
-const char* ssid = "Lorenzo 2G";
-const char* password = "essy54321";
-const char* webip = "192.168.100.32";
+const char* ssid = "nersec";
+const char* password = "gremio123";
+const char* webip = "172.22.170.20";
 
 // UUIDs do serviço BLE
 #define SERVICE_UUID        "12345678-1234-1234-1234-123456789abc"
@@ -21,7 +21,7 @@ const char* webip = "192.168.100.32";
 
 // Variáveis dinâmicas
 String beaconId = "";  // Será preenchido após BLEDevice::init()
-String deviceName = "BEACON COZINHA";
+String deviceName = "BEACON";
 
 // Ponteiros BLE
 BLEServer* pServer = NULL;
